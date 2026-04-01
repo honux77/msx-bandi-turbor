@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Regenerate nextor_boot.dsk
+        run: python3 make_boot_dsk.py
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Bandi IQ-100R ${{ github.ref_name }}"
+          body: |
+            ## Bandi IQ-100R openMSX machine - ${{ github.ref_name }}
+
+            ### 포함 파일
+
+            | 파일 | 설명 |
+            |------|------|
+            | `nextor_boot.dsk` | Nextor 2.1.4 부팅 플로피 (720KB) |
+            | `Nextor-2.1.4.SunriseIDE.ROM` | Nextor 2.1.4 SunriseIDE 커널 ROM |
+            | `Bandi_IQ-100R.xml` | openMSX 머신 설정 파일 |
+
+            ### 설치 방법
+            ```bash
+            cp Bandi_IQ-100R.xml ~/.openMSX/share/machines/
+            cp Nextor-2.1.4.SunriseIDE.ROM ~/.openMSX/share/systemroms/
+            ```
+
+            ### 실행
+            ```bash
+            openmsx -machine Bandi_IQ-100R -diska nextor_boot.dsk
+            ```
+          files: |
+            nextor_boot.dsk
+            Nextor-2.1.4.SunriseIDE.ROM
+            Bandi_IQ-100R.xml

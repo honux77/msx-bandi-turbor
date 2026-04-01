@@ -9,9 +9,15 @@ Disk layout (720KB, 80 tracks, 2 sides, 9 sectors/track, 512 bytes/sector):
   Sectors 7-13 : Root directory (112 entries x 32 bytes = 7 sectors)
   Sectors 14+  : Data area
 
-System files placed first:
-  NEXTOR.SYS   - hidden/system/read-only, cluster 2 (contiguous)
-  COMMAND2.COM - cluster after NEXTOR.SYS
+System files (hidden/system/read-only, placed first):
+  MSXDOS2.SYS  - firmware가 찾는 MSX-DOS2 커널 (Nextor가 확장)
+  NEXTOR.SYS   - Nextor 커널 (선택적)
+  COMMAND2.COM - 커맨드 인터프리터
+
+유틸리티:
+  IDEPAR.COM   - IDE 파티션 관리
+  MAPDRV.COM   - 드라이브 매핑
+  DRVINFO.COM  - 드라이브 정보
 """
 
 import struct
@@ -190,14 +196,19 @@ def make_dir_entry(name, ext, attr, first_cluster, file_size):
     return bytes(entry)
 
 
-def build_disk(nextor_sys_path, command2_path, output_path):
-    with open(nextor_sys_path, 'rb') as f:
-        nextor_data = f.read()
-    with open(command2_path, 'rb') as f:
-        command2_data = f.read()
-
-    print(f"NEXTOR.SYS  : {len(nextor_data):,} bytes")
-    print(f"COMMAND2.COM: {len(command2_data):,} bytes")
+def build_disk(files, output_path):
+    """
+    files: list of (name_8, ext_3, attr, path)
+      attr 0x07 = hidden+system+readonly (system files)
+      attr 0x20 = archive (normal files)
+    System files (0x07) must come first in the list.
+    """
+    file_data = []
+    for name, ext, attr, path in files:
+        with open(path, 'rb') as f:
+            data = f.read()
+        file_data.append((name, ext, attr, data))
+        print(f"{name}.{ext:<3}  attr=0x{attr:02X}  {len(data):,} bytes")
 
     disk = bytearray(TOTAL_SECTORS * SECTOR_SIZE)
 
@@ -205,7 +216,8 @@ def build_disk(nextor_sys_path, command2_path, output_path):
     disk[0:SECTOR_SIZE] = make_boot_sector()
 
     # FAT
-    fat_bytes, first_clusters = make_fat([len(nextor_data), len(command2_data)])
+    sizes = [len(d) for _, _, _, d in file_data]
+    fat_bytes, first_clusters = make_fat(sizes)
     fat1_start = sectors_to_bytes(FAT_START)
     fat2_start = sectors_to_bytes(FAT_START + SECTORS_PER_FAT)
     disk[fat1_start:fat1_start + len(fat_bytes)] = fat_bytes
@@ -213,12 +225,9 @@ def build_disk(nextor_sys_path, command2_path, output_path):
 
     # Root directory
     root_start = sectors_to_bytes(ROOT_START)
-    # NEXTOR.SYS: Hidden + System + ReadOnly = 0x07
-    entry0 = make_dir_entry('NEXTOR  ', 'SYS', 0x07, first_clusters[0], len(nextor_data))
-    # COMMAND2.COM: Archive = 0x20
-    entry1 = make_dir_entry('COMMAND2', 'COM', 0x20, first_clusters[1], len(command2_data))
-    disk[root_start:root_start + 32] = entry0
-    disk[root_start + 32:root_start + 64] = entry1
+    for i, (name, ext, attr, data) in enumerate(file_data):
+        entry = make_dir_entry(name, ext, attr, first_clusters[i], len(data))
+        disk[root_start + i * 32:root_start + (i + 1) * 32] = entry
 
     # File data
     def write_file(data, first_cluster):
@@ -232,24 +241,37 @@ def build_disk(nextor_sys_path, command2_path, output_path):
             offset += SECTORS_PER_CLUSTER * SECTOR_SIZE
             cluster += 1
 
-    write_file(nextor_data, first_clusters[0])
-    write_file(command2_data, first_clusters[1])
+    for i, (_, _, _, data) in enumerate(file_data):
+        write_file(data, first_clusters[i])
 
     with open(output_path, 'wb') as f:
         f.write(disk)
 
-    print(f"Created: {output_path} ({len(disk):,} bytes)")
+    print(f"\nCreated: {output_path} ({len(disk):,} bytes)")
 
 
 if __name__ == '__main__':
     base = os.path.dirname(os.path.abspath(__file__))
-    nextor_sys  = os.path.join(base, 'NEXTOR.SYS')
-    command2    = os.path.join(base, 'COMMAND2.COM')
-    output      = os.path.join(base, 'nextor_boot.dsk')
+    output = os.path.join(base, 'nextor_boot.dsk')
 
-    for path in [nextor_sys, command2]:
-        if not os.path.exists(path):
-            print(f"ERROR: Missing file: {path}", file=sys.stderr)
-            sys.exit(1)
+    # 시스템 파일 먼저 (attr=0x07), 그 다음 일반 파일 (attr=0x20)
+    # MSXDOS2.SYS를 첫 엔트리로: FS-A1GT 내장 FDC ROM이 이 순서로 탐색
+    # Nextor ROM이 있으면 NEXTOR.SYS를 우선 로드, 없으면 MSXDOS2.SYS로 폴백
+    files = [
+        ('MSXDOS2 ', 'SYS', 0x20, os.path.join(base, 'MSXDOS2.SYS')),
+        ('MSXDOS  ', 'SYS', 0x20, os.path.join(base, 'MSXDOS.SYS')),
+        ('NEXTOR  ', 'SYS', 0x20, os.path.join(base, 'NEXTOR.SYS')),
+        ('COMMAND2', 'COM', 0x20, os.path.join(base, 'COMMAND2.COM')),
+        ('COMMAND ', 'COM', 0x20, os.path.join(base, 'COMMAND.COM')),
+        ('IDEPAR  ', 'COM', 0x20, os.path.join(base, 'IDEPAR.COM')),
+        ('MAPDRV  ', 'COM', 0x20, os.path.join(base, 'MAPDRV.COM')),
+        ('DRVINFO ', 'COM', 0x20, os.path.join(base, 'DRVINFO.COM')),
+    ]
 
-    build_disk(nextor_sys, command2, output)
+    missing = [path for _, _, _, path in files if not os.path.exists(path)]
+    if missing:
+        for p in missing:
+            print(f"ERROR: Missing file: {p}", file=sys.stderr)
+        sys.exit(1)
+
+    build_disk(files, output)

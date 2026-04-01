@@ -1,0 +1,7 @@
+# openMSX generated files
+*.cmos
+*.sram
+bandi_iq100r_hd.dsk
+
+# Claude Code
+.claude/
